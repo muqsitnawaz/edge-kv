@@ -1,20 +1,33 @@
 import socket
-import json
 import pickle                   
 
 serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-serversocket.bind((socket.gethostname(), 8001))                                  
+serversocket.bind((socket.gethostname(), 8080))                                  
 serversocket.listen(5)
 
-clients = []
+edges = {}
+clients = {}
+
+def add_edge(req):
+    edges[str(req['edge_id'])] = {'socket': csock, 'location': req['location'], 
+            'http_server': req['http_server']}
+
+def add_user(req):
+    clients[str(req['user_id'])] = {'location': req['location']}
 
 def process_request(csock, data):
     req = pickle.loads(data)
+    print('req: ', req)
 
     if (req['type'] == 'register'):
-        clients.append({'socket': csock, 'client_id': req['client_id']})
-        csock.send(pickle.dumps('Client registered'))
-        print(clients)
+        add_edge(req)
+        csock.send(pickle.dumps('Edge node registered'))
+        print(edges)
+    elif (req['type'] == 'find'):
+        add_user(req)
+        for edge in edges.values():
+            if edge['location'] == req['location']:
+                csock.send(pickle.dumps(edge['http_server']))
 
 while True:
    csock,addr = serversocket.accept()

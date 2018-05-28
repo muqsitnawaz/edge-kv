@@ -1,0 +1,19 @@
+Datacenter
+    - control inf
+
+Protocol
+    - client to dc: connect(location)
+    - dc to client: redirect(edge_node)
+    - client to edge: r/w
+        - client keeps sending location data
+    - on location change
+        - dc: initiate transfer
+        - redirect when complete
+        - if failed
+            - do not redirect
+
+
+control information:
+
+users
+(user_id, )
