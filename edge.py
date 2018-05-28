@@ -1,21 +1,21 @@
 #!/usr/bin/python3
 
 import sys
+import json
 import socket
 import pickle
+from threading import Thread
 import argparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
+from pprint import pprint
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--ip", "-i", type=str, help="ip addr", default="localhost")
-parser.add_argument("--port", "-p", type=int, help="port number", default=8001)
 parser.add_argument("--edge_id", "-e", type=int, help="node id", default=1)
-parser.add_argument("--location", "-l", type=str, help="node location", default="")
 args = parser.parse_args()
 
-class StableStorage:
+class StorageHandler:
     def __init__(self, edge_id):
         self.path = './data/' + str(edge_id)
         print('Stable storage started')
@@ -55,7 +55,101 @@ class StableStorage:
                 file.close()
             print('Done')
 
-SS = StableStorage(args.edge_id)
+    def read_tablet(self, uid):
+        table_path = Path(self.path+'/'+str(uid))
+        user_data = None
+        if table_path.is_file():
+            with open(table_path, 'rb') as file:
+                user_data = pickle.loads(file.read())
+        print('Reading tablet', uid)
+        return user_data
+
+    def write_tablet(self, uid, user_data):
+        table_path = Path(self.path+'/'+str(uid))
+        with open(table_path, 'wb') as file:
+            file.write(pickle.dumps(user_data))
+        print('Writing tablet', uid)
+
+    def delete_tablet(self, uid):
+        table_path = Path(self.path+'/'+str(uid))
+        os.remove(table_path)
+
+SS = StorageHandler(args.edge_id)
+
+class NetworkHandler:
+    def __init__(self, config):
+        # Thread.__init__(self)
+        self.config = config
+        self.conns = {}
+
+    def init_conns(self):
+        self.serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.serversocket.bind((socket.gethostname(), self.config[str(args.edge_id)]['pport']))                                  
+        self.serversocket.listen(5)
+
+        while len(self.conns) != 2 - args.edge_id:
+            sock,addr = self.serversocket.accept()
+            print("got a connection from %s" % str(addr))
+            pid = pickle.loads(sock.recv(1024))
+            print('edge id', pid)
+            self.conns[str(pid)] = sock
+
+        for k, v in self.config.items():
+            if (int(k) < args.edge_id):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((socket.gethostname(), v['pport']))
+                sock.send(pickle.dumps(args.edge_id))
+                print('Made connection to ', v['ip'], v['pport'])
+                self.conns[str(k)] = sock
+
+    def init_threads(self):
+        print('connections',self.conns)
+        for k in self.conns.keys():
+            thread = Thread(target = self.process, args = [k])
+            thread.start()
+
+    def init_dc_connc(self, loc, ip, port):
+        self.dcsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.dcsock.connect((socket.gethostname(), 8080))
+        
+        # Register edge with dc
+        data = pickle.dumps({'type':'register','edge_id':args.edge_id,'location':loc,'http_server':(ip, port)})
+        self.dcsock.send(data)
+        msg = self.dcsock.recv(1024)
+        print(pickle.loads(msg))
+
+        # Starting conn thread
+        thread = Thread(target = self.process_dc, args= [])
+        thread.start()
+
+    def process(self, rid):
+        print('processing thread', self.conns[rid])
+        sock = self.conns[rid]
+        while True:
+            req = pickle.loads(sock.recv(1024))
+            print(req)
+
+            if req['type'] == 'user_data':
+                uid = req['user_id']
+                user_data = req['user_data']
+
+                SS.write_tablet(uid, user_data)
+                sock.send(pickle.dumps({'type':'user_data_ack','user_id':uid}))
+            elif req['type'] == 'user_data_ack':
+                print('User data transfer ack from',rid,'for data',req['user_id'])
+
+    def process_dc(self):
+        while True:
+            req = pickle.loads(self.dcsock.recv(1024))
+            print(req)
+
+            if req['type'] == 'transfer':
+                uid = req['user_id']
+                rid = req['edge_id']
+
+                print('Sending user', uid, 'data to edge', rid)
+                user_data = SS.read_tablet(uid)
+                self.conns[rid].sendall(pickle.dumps({'type':'user_data','user_id':uid,'user_data':user_data}))
 
 # Converts a dictionary of bytes to ascii
 def convert_fs(data):
@@ -64,15 +158,6 @@ def convert_fs(data):
     if isinstance(data, tuple):  return map(convert_fs, data)
     if isinstance(data, list):   return convert_fs(data[0])
     return data
-
-# Connects to the data center
-def connect_to_dc(sock, port, edge_id, location, serv_ip, serv_port):
-    sock.connect((socket.gethostname(), port))
-    data = pickle.dumps({'type': 'register', 'edge_id': edge_id, 'location': location, 
-        'http_server': (serv_ip, serv_port)})
-    sock.send(data)
-    msg = sock.recv(1024)
-    print(pickle.loads(msg))
 
 class testHTTPServer_RequestHandler(BaseHTTPRequestHandler):
     def _set_headers(self):
@@ -105,16 +190,23 @@ class testHTTPServer_RequestHandler(BaseHTTPRequestHandler):
 
 # Runs the http server
 def run_http(ip, port):
-  server_address = (ip, port)
-  httpd = HTTPServer(server_address, testHTTPServer_RequestHandler)
-  print('HTTP server started...')
-  httpd.serve_forever()
+    server_address = (ip, port)
+    httpd = HTTPServer(server_address, testHTTPServer_RequestHandler)
+    print('HTTP server starting on',server_address)
+    httpd.serve_forever()
 
 # Parses args, and runs services
 def main():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    connect_to_dc(sock, 8080, args.edge_id, args.location, args.ip, args.port)
-    run_http(args.ip, args.port)
+    with open('./config.json') as config_file:    
+        config = json.load(config_file)
+    m_config = config[str(args.edge_id)]
+
+    net = NetworkHandler(config)
+    net.init_conns()
+    net.init_threads()
+    net.init_dc_connc(m_config['location'], m_config['ip'], m_config['port'])
+
+    run_http(m_config['ip'], m_config['port'])
 
 if __name__ == '__main__':
     main()

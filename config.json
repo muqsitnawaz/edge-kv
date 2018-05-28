@@ -1,0 +1,5 @@
+{
+    "1": {"pport": 8001, "ip": "localhost", "port": 9001, "location": "sb"}, 
+    "2": {"pport": 8002, "ip": "localhost", "port": 9002, "location": "la"}, 
+    "3": {"pport": 8003, "ip": "localhost", "port": 9003, "location": "sd"}
+}
