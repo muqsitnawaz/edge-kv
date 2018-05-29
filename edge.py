@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+import os
 import sys
 import json
 import socket
@@ -9,7 +10,6 @@ import argparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
-from pprint import pprint
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--edge_id", "-e", type=int, help="node id", default=1)
@@ -56,23 +56,27 @@ class StorageHandler:
             print('Done')
 
     def read_tablet(self, uid):
+        print('Reading tablet', uid)
         table_path = Path(self.path+'/'+str(uid))
         user_data = None
         if table_path.is_file():
             with open(table_path, 'rb') as file:
                 user_data = pickle.loads(file.read())
-        print('Reading tablet', uid)
         return user_data
 
     def write_tablet(self, uid, user_data):
+        print('Writing tablet', uid)
         table_path = Path(self.path+'/'+str(uid))
         with open(table_path, 'wb') as file:
             file.write(pickle.dumps(user_data))
-        print('Writing tablet', uid)
 
     def delete_tablet(self, uid):
+        print('Deleting tablet',uid)
         table_path = Path(self.path+'/'+str(uid))
-        os.remove(table_path)
+        try:
+            os.remove(table_path)
+        except FileNotFoundError:
+            print("tablet not found")
 
 SS = StorageHandler(args.edge_id)
 
@@ -113,21 +117,21 @@ class NetworkHandler:
         self.dcsock.connect((socket.gethostname(), 8080))
         
         # Register edge with dc
-        data = pickle.dumps({'type':'register','edge_id':args.edge_id,'location':loc,'http_server':(ip, port)})
-        self.dcsock.send(data)
+        self.dcsock.send(pickle.dumps({'type':'register','edge_id':args.edge_id,'location':loc,'http_server':(ip, port)}))
         msg = self.dcsock.recv(1024)
         print(pickle.loads(msg))
 
         # Starting conn thread
-        thread = Thread(target = self.process_dc, args= [])
+        thread = Thread(target = self.process_dc)
         thread.start()
 
     def process(self, rid):
         print('processing thread', self.conns[rid])
         sock = self.conns[rid]
+
         while True:
             req = pickle.loads(sock.recv(1024))
-            print(req)
+            print(rid, ':', req)
 
             if req['type'] == 'user_data':
                 uid = req['user_id']
@@ -136,12 +140,15 @@ class NetworkHandler:
                 SS.write_tablet(uid, user_data)
                 sock.send(pickle.dumps({'type':'user_data_ack','user_id':uid}))
             elif req['type'] == 'user_data_ack':
-                print('User data transfer ack from',rid,'for data',req['user_id'])
+                uid = req['user_id']
+
+                SS.delete_tablet(uid)
+                self.dcsock.send(pickle.dumps({'type':'transfer_ack','user_id':uid,'edge_id':rid}))
 
     def process_dc(self):
         while True:
             req = pickle.loads(self.dcsock.recv(1024))
-            print(req)
+            print('dc:',req)
 
             if req['type'] == 'transfer':
                 uid = req['user_id']
@@ -151,7 +158,7 @@ class NetworkHandler:
                 user_data = SS.read_tablet(uid)
                 self.conns[rid].sendall(pickle.dumps({'type':'user_data','user_id':uid,'user_data':user_data}))
 
-# Converts a dictionary of bytes to ascii
+# Convert a dictionary of bytes to ascii
 def convert_fs(data):
     if isinstance(data, bytes):  return data.decode('ascii')
     if isinstance(data, dict):   return dict(map(convert_fs, data.items()))
@@ -188,14 +195,14 @@ class testHTTPServer_RequestHandler(BaseHTTPRequestHandler):
             self.send_resp("Bad user_id")
         return
 
-# Runs the http server
+# Run the http server
 def run_http(ip, port):
     server_address = (ip, port)
     httpd = HTTPServer(server_address, testHTTPServer_RequestHandler)
     print('HTTP server starting on',server_address)
     httpd.serve_forever()
 
-# Parses args, and runs services
+# Parse args and run services
 def main():
     with open('./config.json') as config_file:    
         config = json.load(config_file)
