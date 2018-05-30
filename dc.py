@@ -2,6 +2,28 @@ import socket
 import pickle
 from threading import Thread
 
+class StableStorage:
+    def __init__(self):
+        self.path = './data/dc/'
+        print('Stable storage started')
+
+    def write_state(self, mappings):
+        print('backing up...')
+        with open(self.path+'mappings', 'wb') as file:
+            file.write(pickle.dumps(mappings))
+
+    def read_state(self):
+        print('reading backup...')
+        mappings = {}
+        try:
+            with open(self.path+'mappings', 'rb') as file:
+                mappings = pickle.loads(file.read())
+        except:
+            print('backup not found')
+        return mappings
+
+SS = StableStorage()
+
 class NetworkHandler:
     def __init__(self):
         self.conns = []
@@ -21,6 +43,11 @@ class NetworkHandler:
             self.conns.append(sock)
 
     def init_threads(self):
+        # Read users mappings to edges
+        self.mappings = SS.read_state()
+        print(self.mappings)
+
+        # Start connection threads
         print('connections',self.conns)
         for conn in self.conns:
             thread = Thread(target = self.process_request, args = [conn])
@@ -71,6 +98,7 @@ class NetworkHandler:
                 self.mappings[uid] = eid
                 self.users[uid]['socket'].send(pickle.dumps(self.edges[eid]['http_server']))
 
+            SS.write_state(self.mappings)
             print('edges', self.edges)
             print('users', self.users)
             print('mappings', self.mappings)

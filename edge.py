@@ -31,9 +31,9 @@ class StorageHandler:
                 if fields['key'] in user_data.keys():
                     return user_data[fields['key']]
                 else:
-                    return 'Bad key'
+                    return 'bad key'
         else:
-            return 'Bad key'
+            return 'bad user'
 
     def write(self, fields):
         table_path = Path(self.path+'/'+fields['user_id'])
@@ -53,7 +53,6 @@ class StorageHandler:
             with open(table_path, 'wb') as file:
                 file.write(pickle.dumps(user_data))
                 file.close()
-            print('Done')
 
     def read_tablet(self, uid):
         print('Reading tablet', uid)
